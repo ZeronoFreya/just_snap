@@ -1,7 +1,30 @@
 import bpy
+import bmesh
 from math import floor
-from mathutils import Vector, kdtree
+from mathutils import Vector, kdtree, bvhtree
 from . import just_utils
+
+import gpu
+from gpu_extras.batch import batch_for_shader
+
+shader = gpu.shader.from_builtin('2D_UNIFORM_COLOR')
+
+def draw(self, ctx):
+
+    if self.xxxx is None:
+        return
+    coords = list(self.xxxx.keys())
+
+    
+    gpu.state.blend_set("ALPHA")
+    # gpu.state.depth_test_set("LESS")
+    gpu.state.point_size_set(10)
+    # print(self.coords)
+    batch = batch_for_shader(shader, 'POINTS', {"pos": coords})
+    shader.bind()
+    shader.uniform_float("color", (0.0, 1.0, 0.0, 1.0))
+    batch.draw(shader)
+    gpu.state.point_size_set(5)
 
 class JustSnap:
     # 局部视图下:
@@ -28,31 +51,82 @@ class JustSnap:
         self.__rv3d = context.space_data.region_3d
         self.__local_view = context.space_data.local_view
 
-        self.__visible_objs = just_utils.get_visible_objs(
-                self.__ctx, self.__local_view)
+        # all_objs = [obj for obj in bpy.data.objects if obj.visible_get()]
+        # # all_scene_objects = [obj for obj in context.view_layer.objects if not obj.hide_get()]
+        # print(all_objs)
+        # self.__visible_objs = just_utils.get_visible_objs(
+        #         self.__ctx, self.__local_view)
+
+        # 获取可见对象，
+        # 局部模式，在插件中正常，但在编辑器中却获得全部物体，大概是context的原因？
+        # 不知道可不可靠
+        self.__visible_objs = [obj for obj in context.scene.objects if obj.visible_get()]
+
         self.__visible_objs_name = [obj.name for obj in self.__visible_objs]
+        print(self.__visible_objs_name)
         context.scene["just_snap_hide_obj"] = self.__visible_objs_name
         self.__not_in_local = None
         if self.__local_view:
-            # api有bug才出此下策
-            all_objs = [obj for obj in context.scene.objects if obj.visible_get()]
-            self.__not_in_local = [obj for obj in all_objs if obj.name not in self.__visible_objs_name]
+            # ray_cast 会碰撞到所有显示物体，包括局部视图外及场景外(以某个物体的实例显示的情况)
+            # 所以隐藏掉，不清楚是不是bug
+            all_not_local_objs = [obj for obj in context.scene.objects if obj.name not in self.__visible_objs_name]
+            # print(all_objs)
+            self.__not_in_local = [obj for obj in all_not_local_objs if not obj.hide_get()]
             for obj in self.__not_in_local:
                 obj.hide_set(True)
 
         self.__snap_type_list = ["ORIGINS", "POINTS", "MIDPOINTS", "FACES"]
         self.__snap_type = "ORIGINS"
         
-        self.__bound_box = {}
-        self.__get_objs_bound_box()        
+        self.__objs_data = {
+            "box": {},
+            "data":{}
+        }
+        # self.__bound_box = {}
+        # self.__bmesh = {}
+        # self.__get_objs_bound_box()  
+        for obj in self.__visible_objs:
+            size = obj.dimensions.length 
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+            bm.edges.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+            # bm = bmesh.from_edit_mesh(me)
+            matrix = obj.matrix_world
+            bmesh.ops.transform(bm, matrix=matrix, verts=bm.verts)
+            # print([(v.index, v.co) for v in bm.verts])
+            self.__objs_data["box"][obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box]
+            self.__objs_data["data"][obj.name] = {
+                "name": obj.name,
+                "size": size,
+                "location": obj.location,
+                "matrix_w": matrix,
+                "matrix_l": obj.matrix_local,
+                "bm": bm,
+                "bvh": bvhtree.BVHTree.FromBMesh(bm)
+            }
+            # self.__bmesh[obj.name] = bm
+            # self.__bound_box[obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box] 
+
+        
 
         self.__reset_data()
+
+        self.xxxx = None
+        args = (self, context)
+        self.test_handler = bpy.types.SpaceView3D.draw_handler_add(draw, args, 'WINDOW', 'POST_PIXEL')
     
     def exit(self):
-        # api有bug才出此下策
+        bpy.types.SpaceView3D.draw_handler_remove(self.test_handler, 'WINDOW')
+        
         if self.__not_in_local is not None:
             for obj in self.__not_in_local:
                 obj.hide_set(False)
+        
+        for data in self.__objs_data["data"].values():
+            data["bvh"] = None
+            data["bm"].free()
 
     @property
     def snap_type(self):
@@ -84,10 +158,10 @@ class JustSnap:
                 objs.append(obj_name)
         return objs
 
-    def __get_objs_bound_box(self):
-        for obj in self.__visible_objs:
-            matrix = obj.matrix_world
-            self.__bound_box[obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box]
+    # def __get_objs_bound_box(self):
+    #     for obj in self.__visible_objs:
+    #         matrix = obj.matrix_world
+    #         self.__bound_box[obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box]
     
     def __update_mouse(self, event):
         self.mouse_position = (event.mouse_region_x, event.mouse_region_y)
@@ -99,12 +173,13 @@ class JustSnap:
     def __update_origins_kd_tree(self):
         kd_data = self.__kd_verts_data["ORIGINS"]["data"]
         for obj in self.__visible_objs:
-            k, v, n = self.__get_k_v_n(obj.name, obj.location, kd_data)
+            k, v, n = self.__get_s2d_w3d_oname(obj.name, obj.location, kd_data)
             kd_data[k] = (v, n)
         self.__kd_tree_from_cache("ORIGINS")
     
 
-    def __get_k_v_n(self, o_name, w_vert, kd_data):
+    def __get_s2d_w3d_oname(self, o_name, w_vert, kd_data):
+        '''返回屏幕座标、世界座标、物体名称'''
         s_vert = just_utils.world_to_screen(self.__region, self.__rv3d, w_vert)
         if s_vert in kd_data:
             # 保留更前面的
@@ -150,6 +225,7 @@ class JustSnap:
         depsgraph = self.__ctx.evaluated_depsgraph_get()
         hit_objs = []
         snap_data = self.__kd_verts_data[self.__snap_type]
+        
         if self.__xray_mode:
             hits = self.__get_objs_under_mouse()
             for _, obj_name in enumerate(hits):
@@ -166,14 +242,19 @@ class JustSnap:
                     depsgraph, origin=self.mouse_position_world,
                     direction=self.mouse_vector)
             # print(direct_hit, hit_object)
-            if direct_hit is False or hit_object.name not in self.__visible_objs_name or hit_object.name in snap_data["objs"]:
+            if direct_hit is False:
                 return
-            
-            if just_utils.ignore_high_density_mesh(hit_object, face_index, self.__region, self.__rv3d):
+            obj_name = hit_object.name
+            if obj_name not in self.__visible_objs_name \
+                    or obj_name in snap_data["objs"]:
+                return
+            bm = self.__objs_data["data"][obj_name]["bm"]
+            if just_utils.ignore_high_density_mesh(
+                    bm.faces[face_index].verts, self.__region, self.__rv3d):
                 return
             
             hit_objs.append({
-                "name": hit_object.name,
+                "name": obj_name,
                 "location": hit_location,
                 "index": face_index
             })
@@ -184,18 +265,20 @@ class JustSnap:
             # print("重建 kdtree2")
             snap_data["objs"].append(obj_name)
             data = {}
+            obj_data = self.__objs_data["data"][obj_name]
+            ignore_back = not self.__xray_mode
             if self.__snap_type == "POINTS":
                 data = just_utils.get_vert_data(
-                    obj_name, depsgraph, self.__region, self.__rv3d, 
-                    self.__v3d_0_0, self.__v3d_w_h, not self.__xray_mode )
+                    obj_data, self.__region, self.__rv3d, 
+                    self.__v3d_0_0, self.__v3d_w_h, ignore_back )
             elif self.__snap_type == "MIDPOINTS":
                 data = just_utils.get_edge_data(
-                    obj_name, depsgraph, self.__region, self.__rv3d, 
-                    self.__v3d_0_0, self.__v3d_w_h, not self.__xray_mode )
+                    obj_data, self.__region, self.__rv3d, 
+                    self.__v3d_0_0, self.__v3d_w_h, ignore_back )
             elif self.__snap_type == "FACES":
                 data = just_utils.get_face_data(
-                    obj_name, depsgraph, self.__region, self.__rv3d,
-                    self.__v3d_0_0, self.__v3d_w_h, not self.__xray_mode )
+                    obj_data, self.__region, self.__rv3d, 
+                    self.__v3d_0_0, self.__v3d_w_h, ignore_back )
             if len(data) == 0:
                 continue
             snap_data["data"].update(data)
@@ -270,6 +353,8 @@ class JustSnap:
         self.__update_mouse(event)
         self.__update_kd_tree()
         data = self.__kd_verts_data[self.__snap_type]
+
+        self.xxxx = data["data"]
         # print(data)
         if data["kd"]:
             search_distance = 200 
@@ -310,7 +395,7 @@ class JustSnap:
         self.__xray_mode = xray
 
         if xray:
-            for obj_name, bound in self.__bound_box.items():
+            for obj_name, bound in self.__objs_data["box"].items():
 
                 M = just_utils.matrix_screen_to_matrix_world(self.__rv3d, self.__v3d_0_0)
                 isInView, v = just_utils.is_in_view(bound, M, self.__v3d_w_h)

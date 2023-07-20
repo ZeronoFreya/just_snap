@@ -60,17 +60,13 @@ def is_in_view(bound_box, matrix, v3d_w_h):
         isInView = False
     return isInView, (x0, y0, x1, y1)
 
-def get_vert_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, vertices=None):
-    if vertices is None:
-        vertices = obj.data.vertices
-    matrix = obj.matrix_world
+def get_vert_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d):
     M = matrix_screen_to_matrix_world(rv3d, v3d_0_0)
     idxs = []
     v3d_w_h = M @ v3d_w_h
     w = v3d_w_h[0]
     h = v3d_w_h[1]
-    M = M @ matrix
-    for vert in vertices:
+    for vert in bm.verts:
         p = M @ vert.co
         isInView = True
         if p[0] < 0 or p[0] > w or p[1] < 0 or p[1] > h:
@@ -79,20 +75,16 @@ def get_vert_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, vertices=None):
             idxs.append(vert.index)
     return idxs
 
-def get_edge_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, edges=None):
-    if edges is None:
-        edges = obj.data.edges
-    vertices = obj.data.vertices
-    matrix = obj.matrix_world
+def get_edge_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d):
+    vertices = bm.verts
     M = matrix_screen_to_matrix_world(rv3d, v3d_0_0)
     idxs = []
     v3d_w_h = M @ v3d_w_h
     w = v3d_w_h[0]
     h = v3d_w_h[1]
-    M = M @ matrix
-    for edge in edges:
-        i0, i1 = edge.vertices
-        center = (vertices[i0].co + vertices[i1].co) / 2
+    for edge in bm.edges:
+        v0, v1 = edge.verts
+        center = (v0.co + v1.co) / 2
         p = M @ center
         isInView = True
         if p[0] < 0 or p[0] > w or p[1] < 0 or p[1] > h:
@@ -101,23 +93,19 @@ def get_edge_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, edges=None):
             idxs.append(edge.index)
     return idxs
 
-def get_face_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, polygons=None):
+def get_face_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d):
     '''获取物体在视图内的面索引'''
     # 将窗口matrix转为世界matrix，移动 v3d_0_0 到原点
-    # 顶点Y座标小于0或大于屏幕宽度则在屏幕外侧
-    if polygons is None:
-        polygons = obj.data.polygons
+    # 顶点Y座标小于0或大于屏幕宽度在世界中的长度(v3d_w_h)则在屏幕外侧
 
-    matrix = obj.matrix_world
     M = matrix_screen_to_matrix_world(rv3d, v3d_0_0)
     idxs = []
     v3d_w_h = M @ v3d_w_h
     w = v3d_w_h[0]
     h = v3d_w_h[1]
-    M = M @ matrix
     
-    for face in polygons:
-        p = M @ face.center
+    for face in bm.faces:
+        p = M @ face.calc_center_median()
         isInView = True
         if p[0] < 0 or p[0] > w or p[1] < 0 or p[1] > h:
             isInView = False
@@ -125,19 +113,25 @@ def get_face_idx_in_screen(obj, v3d_0_0, v3d_w_h, rv3d, polygons=None):
             idxs.append(face.index)
     return idxs
 
-def get_visible_vert_idx_from_direction(obj, depsgraph, direction, vertices=None):
+def __get_visible_data(obj_data, direction):
+    bvh = obj_data["bvh"]
+    size = obj_data["size"]
+    distance = size * 2
+    matrix_l = obj_data["matrix_l"]
+    direction = direction.normalized() @ matrix_l
+    direction *= -1
+    return bvh, distance, direction, size
+
+def get_visible_vert_idx_from_direction(obj_data, direction, vertices=None):
     '''返回物体上从方向向量看去的未被遮挡的顶点索引'''
     '''忽略物体间的遮挡，仅计算自身的顶点'''
     # direction, 方向向量，指向物体
     if vertices is None:
-        vertices = obj.data.vertices
-    idxs = []
-    bvh = bvhtree.BVHTree.FromObject(obj, depsgraph)
-    size = obj.dimensions.length 
-    distance = size * 2
-    direction = direction.normalized() @ obj.matrix_local
-    direction *= -1
+        vertices = obj_data["bm"].verts
+
+    bvh, distance, direction, _ = __get_visible_data(obj_data, direction)
     offset = direction * 0.001
+    idxs = []
     for vert in vertices:
         start_point = vert.co + offset
         # location, normal, index, distance
@@ -146,43 +140,38 @@ def get_visible_vert_idx_from_direction(obj, depsgraph, direction, vertices=None
             idxs.append(vert.index)
     return idxs
 
-def get_visible_edge_idx_from_direction(obj, depsgraph, direction, edges=None):
+def get_visible_edge_idx_from_direction(obj_data, direction, edges=None):
     '''返回物体上从方向向量看去的未被遮挡的边索引'''
     '''忽略物体间的遮挡，仅计算自身的边'''
     # direction, 方向向量，指向物体
+    
     if edges is None:
-        edges = obj.data.edges
-    vertices = obj.data.vertices
-    idxs = []
-    bvh = bvhtree.BVHTree.FromObject(obj, depsgraph)
-    size = obj.dimensions.length 
-    distance = size * 2
-    direction = direction.normalized() @ obj.matrix_local
-    direction *= -1
+        edges = obj_data["bm"].edges
+
+    bvh, distance, direction, _ = __get_visible_data(obj_data, direction)
     offset = direction * 0.001
+    idxs = []
     for edge in edges:
-        i0, i1 = edge.vertices
-        start_point = (vertices[i0].co + vertices[i1].co) / 2 + offset
+        v0, v1 = edge.verts
+        start_point = (v0.co +v1.co) / 2 + offset
         # location, normal, index, distance
         _, _, index, _ = bvh.ray_cast(start_point, direction, distance)
         if index is None:
             idxs.append(edge.index)
     return idxs
 
-def get_visible_face_idx_from_direction(obj, depsgraph, direction, polygons=None):
+def get_visible_face_idx_from_direction(obj_data, direction, polygons=None):
     '''返回物体上从方向向量看去的未被遮挡的面索引'''
     '''忽略物体间的遮挡，仅计算自身的面'''
     # direction, 方向向量，指向物体
     if polygons is None:
-        polygons = obj.data.polygons
-    idxs = []
-    bvh = bvhtree.BVHTree.FromObject(obj, depsgraph)
-    size = obj.dimensions.length 
-    distance = size * 2
-    direction = direction.normalized() @ obj.matrix_local
+        polygons = obj_data["bm"].faces
+
+    bvh, distance, direction, size = __get_visible_data(obj_data, direction)
     offset = direction * size * 1.5
+    idxs = []
     for face in polygons:
-        end_point = face.center
+        end_point = face.calc_center_median()
         start_point = end_point - offset
         # location, normal, index, distance
         _, _, index, _ = bvh.ray_cast(start_point, direction, distance)
@@ -190,140 +179,114 @@ def get_visible_face_idx_from_direction(obj, depsgraph, direction, polygons=None
             idxs.append(face.index)
     return idxs
 
-def __get_data_before(obj_name, depsgraph, region, rv3d, 
-        v3d_0_0=None, v3d_w_h=None, ignore_modifiers=True):
+def __get_data_before(obj_data, region, rv3d, 
+        v3d_0_0=None, v3d_w_h=None):
     
+    obj_name = obj_data["name"]
     obj = bpy.data.objects[obj_name]
+
+    bm = obj_data["bm"]
     
     screen_normal = get_screen_normal(region, rv3d, 
             (region.width // 2, region.height // 2))
-    data = obj.data
-    if not ignore_modifiers:
-        data = obj.evaluated_get(depsgraph).data
     
     if v3d_0_0 is None:
         v3d_0_0 = screen_to_world(region, rv3d, (0,0))
     if v3d_w_h is None:
         v3d_w_h = screen_to_world(region, rv3d, (region.width,region.height))
     
-    d = (obj.location - v3d_0_0).length * screen_normal
+    d = (obj_data["location"] - v3d_0_0).length * screen_normal
     v3d_0_0 = d + v3d_0_0
     v3d_w_h = d + v3d_w_h
     
-    return obj, v3d_0_0, v3d_w_h, screen_normal
+    return bm, v3d_0_0, v3d_w_h, screen_normal
 
-def get_vert_data(
-            obj_name, depsgraph, region, rv3d, v3d_0_0=None, v3d_w_h=None, 
-            ignore_back=True, ignore_modifiers=True):
-    obj, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
-            obj_name, depsgraph, region, rv3d, v3d_0_0, v3d_w_h, ignore_modifiers)
+def get_vert_data(obj_data, region, rv3d, 
+            v3d_0_0=None, v3d_w_h=None, ignore_back=True):
+    bm, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
+            obj_data, region, rv3d, v3d_0_0, v3d_w_h)
 
-    data = obj.data
-    vertices = data.vertices
-
-    idxs = get_vert_idx_in_screen(
-            obj, v3d_0_0, v3d_w_h, rv3d, vertices)
+    idxs = get_vert_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d)
     if len(idxs) == 0:
         return {}
     if ignore_back:
         # 去除被遮挡的点
-        vertices = [data.vertices[i] for i in idxs]
-        idxs = get_visible_vert_idx_from_direction(obj, depsgraph, screen_normal, vertices)
+        idxs = get_visible_vert_idx_from_direction(obj_data, screen_normal, 
+                [bm.verts[i] for i in idxs])
         if len(idxs) == 0:
             return {}
-    matrix = obj.matrix_world
     rs = {}
     for idx in idxs:
-        center = matrix @ data.vertices[idx].co
+        center = bm.verts[idx].co
         v_2d = world_to_screen(region, rv3d, center)
-        rs[v_2d] = (center, obj_name, idx)
+        rs[v_2d] = (center, obj_data["name"], idx)
     
     return rs
 
-def get_edge_data(
-            obj_name, depsgraph, region, rv3d, v3d_0_0=None, v3d_w_h=None, 
-            ignore_back=True, ignore_modifiers=True):
-    obj, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
-            obj_name, depsgraph, region, rv3d, v3d_0_0, v3d_w_h, ignore_modifiers)
-
-    data = obj.data
-    vertices = data.vertices
-    edges = data.edges
+def get_edge_data(obj_data, region, rv3d, 
+            v3d_0_0=None, v3d_w_h=None, ignore_back=True):
+    bm, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
+            obj_data, region, rv3d, v3d_0_0, v3d_w_h)
     
-    idxs = get_edge_idx_in_screen(
-            obj, v3d_0_0, v3d_w_h, rv3d, edges)
+    idxs = get_edge_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d)
     if len(idxs) == 0:
         return {}
     if ignore_back:
         # 去除被遮挡的边
-        edges = [data.edges[i] for i in idxs]
-        idxs = get_visible_edge_idx_from_direction(obj, depsgraph, screen_normal, edges)
+        idxs = get_visible_edge_idx_from_direction(obj_data, screen_normal, 
+                [bm.edges[i] for i in idxs])
         if len(idxs) == 0:
             return {}
-    matrix = obj.matrix_world
     rs = {}
     for idx in idxs:
-        i0, i1 = data.edges[idx].vertices
-        center = (vertices[i0].co + vertices[i1].co) / 2
-        center = matrix @ center
+        v0, v1 = bm.edges[idx].verts
+        center = (v0.co + v1.co) / 2
         v_2d = world_to_screen(region, rv3d, center)
-        rs[v_2d] = (center, obj_name, idx)
+        rs[v_2d] = (center, obj_data["name"], idx)
     
     return rs
 
-def get_face_data(
-            obj_name, depsgraph, region, rv3d, v3d_0_0=None, v3d_w_h=None, 
-            ignore_back=True, ignore_modifiers=True):
+def get_face_data(obj_data, region, rv3d, 
+            v3d_0_0=None, v3d_w_h=None, ignore_back=True):
     '''获取物体在可视区域内的面中点的对照数据'''
     # return {
     #    屏幕        世界      名称    下标
     #    (x, y) : ( (x, y, z), "name", 0 )
     # }
-    obj, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
-            obj_name, depsgraph, region, rv3d, v3d_0_0, v3d_w_h, ignore_modifiers)
-    
-    matrix = obj.matrix_world
-
-    data = obj.data
-    polygons = data.polygons
+    bm, v3d_0_0, v3d_w_h, screen_normal = __get_data_before(
+            obj_data, region, rv3d, v3d_0_0, v3d_w_h)
     
     # 获取物体在视图内的面索引
-    idxs = get_face_idx_in_screen(
-            obj, v3d_0_0, v3d_w_h, rv3d, polygons)
+    idxs = get_face_idx_in_screen(bm, v3d_0_0, v3d_w_h, rv3d)
     if len(idxs) == 0:
-        print("err 1")
         return {}
 
     if ignore_back:
         # 去除被遮挡的面
-        polygons = [data.polygons[i] for i in idxs]
-        idxs = get_visible_face_idx_from_direction(obj, depsgraph, screen_normal, polygons)
+        idxs = get_visible_face_idx_from_direction(obj_data, screen_normal, 
+                [bm.faces[i] for i in idxs])
         if len(idxs) == 0:
-            print("err 2")
             return {}
     
     rs = {}
     for idx in idxs:
-        face = data.polygons[idx]
-        center = matrix @ face.center
+        face = bm.faces[idx]
+        center = face.calc_center_median()
         v_2d = world_to_screen(region, rv3d, center)
-        rs[v_2d] = (center, obj_name, idx)
+        rs[v_2d] = (center, obj_data["name"], idx)
     
     return rs
 
-def ignore_high_density_mesh(obj, idx, region, rv3d):
+def ignore_high_density_mesh(verts, region, rv3d):
     '''忽略高密度网格'''
     # 计算射线投射到的面在屏幕上投影的大小
     # 尺寸小于屏幕像素 60 * 60，忽略
-    vertices = obj.data.vertices
-    verts_idx = obj.data.polygons[idx].vertices
+    
     axis_x = []
     axis_y = []
-    matrix = obj.matrix_world
     
-    for i in verts_idx:
-        vert = matrix @ vertices[i].co
-        p = world_to_screen(region, rv3d, vert)
+    for vert in verts:
+        p = world_to_screen(region, rv3d, vert.co)
         axis_x.append(p[0])
         axis_y.append(p[1])
     

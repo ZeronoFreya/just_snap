@@ -53,6 +53,12 @@ class JSNAP_OT_test(bpy.types.Operator):
             self.coords = closest
         self.area.tag_redraw()
 
+    def __init__(self):
+        print("Start")
+
+    def __del__(self):
+        print("End")
+
     def execute(self, context):
         bpy.types.SpaceView3D.draw_handler_remove(self.test_handler, 'WINDOW')
         self.area.tag_redraw()
