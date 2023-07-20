@@ -51,18 +51,11 @@ class JustSnap:
         self.__rv3d = context.space_data.region_3d
         self.__local_view = context.space_data.local_view
 
-        # all_objs = [obj for obj in bpy.data.objects if obj.visible_get()]
-        # # all_scene_objects = [obj for obj in context.view_layer.objects if not obj.hide_get()]
-        # print(all_objs)
-        # self.__visible_objs = just_utils.get_visible_objs(
-        #         self.__ctx, self.__local_view)
-
         # 获取可见对象，
         # 局部模式，在插件中正常，但在编辑器中却获得全部物体，大概是context的原因？
         # 不知道可不可靠
-        self.__visible_objs = [obj for obj in context.scene.objects if obj.visible_get()]
+        self.__visible_objs_name = [obj.name for obj in context.scene.objects if obj.visible_get()]
 
-        self.__visible_objs_name = [obj.name for obj in self.__visible_objs]
         print(self.__visible_objs_name)
         context.scene["just_snap_hide_obj"] = self.__visible_objs_name
         self.__not_in_local = None
@@ -81,44 +74,20 @@ class JustSnap:
         self.__objs_data = {
             "box": {},
             "data":{}
-        }
-        # self.__bound_box = {}
-        # self.__bmesh = {}
-        # self.__get_objs_bound_box()  
-        for obj in self.__visible_objs:
-            size = obj.dimensions.length 
-            bm = bmesh.new()
-            bm.from_mesh(obj.data)
-            bm.verts.ensure_lookup_table()
-            bm.edges.ensure_lookup_table()
-            bm.faces.ensure_lookup_table()
-            # bm = bmesh.from_edit_mesh(me)
+        } 
+        for obj_name in self.__visible_objs_name:
+            obj = bpy.data.objects[obj_name]
             matrix = obj.matrix_world
-            bmesh.ops.transform(bm, matrix=matrix, verts=bm.verts)
-            # print([(v.index, v.co) for v in bm.verts])
             self.__objs_data["box"][obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box]
-            self.__objs_data["data"][obj.name] = {
-                "name": obj.name,
-                "size": size,
-                "location": obj.location,
-                "matrix_w": matrix,
-                "matrix_l": obj.matrix_local,
-                "bm": bm,
-                "bvh": bvhtree.BVHTree.FromBMesh(bm)
-            }
-            # self.__bmesh[obj.name] = bm
-            # self.__bound_box[obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box] 
-
-        
 
         self.__reset_data()
 
         self.xxxx = None
-        args = (self, context)
-        self.test_handler = bpy.types.SpaceView3D.draw_handler_add(draw, args, 'WINDOW', 'POST_PIXEL')
+        # args = (self, context)
+        # self.test_handler = bpy.types.SpaceView3D.draw_handler_add(draw, args, 'WINDOW', 'POST_PIXEL')
     
     def exit(self):
-        bpy.types.SpaceView3D.draw_handler_remove(self.test_handler, 'WINDOW')
+        # bpy.types.SpaceView3D.draw_handler_remove(self.test_handler, 'WINDOW')
         
         if self.__not_in_local is not None:
             for obj in self.__not_in_local:
@@ -157,11 +126,6 @@ class JustSnap:
                     y > min_v[1] and y < max_v[1]:
                 objs.append(obj_name)
         return objs
-
-    # def __get_objs_bound_box(self):
-    #     for obj in self.__visible_objs:
-    #         matrix = obj.matrix_world
-    #         self.__bound_box[obj.name] = [matrix @ Vector(loc) for loc in obj.bound_box]
     
     def __update_mouse(self, event):
         self.mouse_position = (event.mouse_region_x, event.mouse_region_y)
@@ -172,8 +136,9 @@ class JustSnap:
     
     def __update_origins_kd_tree(self):
         kd_data = self.__kd_verts_data["ORIGINS"]["data"]
-        for obj in self.__visible_objs:
-            k, v, n = self.__get_s2d_w3d_oname(obj.name, obj.location, kd_data)
+        for obj_name in self.__visible_objs_name:
+            obj = bpy.data.objects[obj_name]
+            k, v, n = self.__get_s2d_w3d_oname(obj_name, obj.location, kd_data)
             kd_data[k] = (v, n)
         self.__kd_tree_from_cache("ORIGINS")
     
@@ -214,6 +179,26 @@ class JustSnap:
             return        
         self.__reset_data()
 
+    def __add_obj_data(self, obj_name):
+        obj = bpy.data.objects[obj_name]
+        size = obj.dimensions.length 
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        matrix = obj.matrix_world
+        bmesh.ops.transform(bm, matrix=matrix, verts=bm.verts)
+        self.__objs_data["data"][obj_name] = {
+            "name": obj_name,
+            "size": size,
+            "location": obj.location,
+            "matrix_w": matrix,
+            "matrix_l": obj.matrix_local,
+            "bm": bm,
+            "bvh": bvhtree.BVHTree.FromBMesh(bm)
+        }
+
     def __update_kd_tree(self):
         self.__update_view()
 
@@ -228,12 +213,25 @@ class JustSnap:
         
         if self.__xray_mode:
             hits = self.__get_objs_under_mouse()
-            for _, obj_name in enumerate(hits):
-                if hit_object.name not in self.__visible_objs_name and obj_name not in snap_data["objs"]:
+            for obj_name in hits:
+                if obj_name in self.__visible_objs_name \
+                        and obj_name not in snap_data["objs"]:
+                    if obj_name not in self.__objs_data["data"]:
+                        self.__add_obj_data(obj_name)
+                    
+                    bvh = self.__objs_data["data"][obj_name]["bvh"]
+                    # location, normal, index, distance
+                    hit_location, _, face_index, _ = bvh.ray_cast(self.mouse_position_world, self.mouse_vector)
+                    if hit_location is None:
+                        continue
+                    bm = self.__objs_data["data"][obj_name]["bm"]
+                    if just_utils.ignore_high_density_mesh(
+                            bm.faces[face_index].verts, self.__region, self.__rv3d):
+                        continue
                     hit_objs.append({
                         "name": obj_name,
-                        "location": None,
-                        "index": None
+                        "location": hit_location,
+                        "index": face_index
                     })
             if len(hit_objs) == 0:
                 return
@@ -248,6 +246,8 @@ class JustSnap:
             if obj_name not in self.__visible_objs_name \
                     or obj_name in snap_data["objs"]:
                 return
+            if obj_name not in self.__objs_data["data"]:
+                self.__add_obj_data(obj_name)
             bm = self.__objs_data["data"][obj_name]["bm"]
             if just_utils.ignore_high_density_mesh(
                     bm.faces[face_index].verts, self.__region, self.__rv3d):
