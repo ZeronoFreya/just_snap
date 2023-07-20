@@ -167,6 +167,7 @@ def get_visible_face_idx_from_direction(obj_data, direction, polygons=None):
         polygons = obj_data["bm"].faces
 
     bvh, distance, direction, size = __get_visible_data(obj_data, direction)
+    direction *= -1
     offset = direction * size * 1.5
     idxs = []
     for face in polygons:

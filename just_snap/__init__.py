@@ -346,6 +346,7 @@ class JustSnap:
         '''获取离鼠标最近的吸附点'''
         # return (
         #   True,           是否吸附成功
+        #   (x, y),         吸附到的屏幕座标 Or None
         #   (x, y, z),      吸附到的世界座标 Or None
         #   obj_name,       吸附物体名称 Or ""
         #   [(x, y, z) ...] 周围可吸附的最近的点，最多6个
@@ -361,7 +362,7 @@ class JustSnap:
             points_found = data["kd"].find_range(((self.mouse_position[0], self.mouse_position[1], 0)), search_distance)
             len_found = len(points_found)
             if len_found == 0:
-                return False, None, "", []
+                return False, None, None, "", []
             elif len_found == 1:
                 found = points_found
             else:
@@ -375,14 +376,14 @@ class JustSnap:
                 closest = found[0][0]
                 k = (floor(closest[0]), floor(closest[1]))
                 
-                return True, kd_data[k][0], kd_data[k][1], []
+                return True, k, kd_data[k][0], kd_data[k][1], []
             else:
                 closest_6 = []
                 for fd in found:
                     k = (floor(fd[0][0]), floor(fd[0][1]))
                     closest_6.append(kd_data[k][0])
-                return False, None, "", closest_6
-        return False, None, "", []
+                return False, None, None, "", closest_6
+        return False, None, None, "", []
 
     def update_xray_mode(self):
         xray = False

@@ -45,7 +45,7 @@ class JSNAP_OT_test(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def mousemove(self):
-        isSnaped, location, obj_name, closest = self.jsnap.get_snap_point(self.ctx, self.evt)
+        isSnaped, screen_pos, location, obj_name, closest = self.jsnap.get_snap_point(self.ctx, self.evt)
         if isSnaped:
             self.ctx.scene.cursor.location = location
             self.coords = [location]
