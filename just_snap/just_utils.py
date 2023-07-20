@@ -1,5 +1,4 @@
 import bpy
-from mathutils import bvhtree
 from bpy_extras import view3d_utils
 from math import floor
 
